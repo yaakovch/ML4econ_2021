@@ -1,0 +1,40 @@
+---
+title: "Exercise 1"
+author: "Yaakov Chen-Zion"
+date: "3/31/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Question 1
+
+```{r Question 1}
+library(kableExtra)
+library(tidyverse)
+```
+
+Question 2
+
+```{r Question 2}
+data(iris)
+iris %>%
+  select(Species, Sepal.Length, Sepal.Width) %>%
+  group_by(Species) %>%
+  summarise(Average_Sepal_Length = mean(Sepal.Length))
+```
+
+Question 3
+
+```{r Question 3}
+data(mtcars)
+mtcars %>%
+  mutate(cyl = as.factor(cyl)) %>% 
+  group_by(cyl) %>%
+  ggplot(aes(x = hp, y = mpg, color = cyl)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+```
+
