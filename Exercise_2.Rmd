@@ -1,0 +1,215 @@
+---
+title: "Exercise 2"
+author: "Yaakov Chen Zion"
+date: "4/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Q: Can we use the data for prediction without assumptions? Why?
+
+A: No. Every prediction model use assumption (implicit or explicit) on the data generating process to make predictions
+
+Q: What is the downside in adding interactions?
+
+A: The more interactions we add, the fewer degrees of freedom we have, hence we are more prone to overfit the data
+
+Q: Why is those assumptions strong? Can you come up with a story that wouldn’t fit?
+
+A: The X's are very unlikely to be uncorrelated with unobservables.
+
+Q: The confidence intervals of the βs derived from those assumptions. Explain how the confidence intervals derived from the assumptions (Intuitive explanation is enough).
+
+A: The length of the interval is based on the normal distribution, especially for small samples. Also, the expectation of the parameter might be biased if the X is correlated with an unobservable
+
+
+```{r intializaion}
+if (!require("pacman")) install.packages("pacman")
+library(pacman)
+p_load(
+  tidyverse,
+  DataExplorer,
+  tidymodels,
+  Metrics,
+  glmnet
+)
+set.seed(100)
+```
+```{r Exploration}
+df <- read_csv("winequality_red.csv")
+plot_histogram(data = df)
+plot_boxplot(data = df, by = "quality")
+```
+
+```{r Model Dat}
+wine_split <- df %>%
+  initial_split(prop = 0.7)
+
+wine_train <- training(wine_split)
+wine_validation <- testing(wine_split)
+
+fit_lm <- lm(data = wine_train, quality ~ .)
+```
+
+```{r Preditcions}
+predicted <- fit_lm %>%
+  predict(wine_validation)
+head(predicted, 6)
+```
+```{r RMSE}
+actual <- wine_validation %>%
+  select(quality) %>%
+  pull()
+rmse(predicted, actual)
+```
+
+```{r MAE}
+mae(predicted, actual)
+```
+
+```{r R-squared}
+fit_lm %>%
+  summary() %>%
+  with(r.squared)
+```
+Q: Confidence intervals and t-test are essential parts of determining whether we estimated the “real” β or not. RMSE also helps to assert whether your model is correct or not. What is the main difference between these tests?
+
+A: RMSE measuring the fitting of the whole model, not individual estimators
+
+Q: Can we use linear regression for binary outcomes? Why?
+
+A: Yes. the LPM it is an unbiased estimator
+
+```{r Load heart}
+df_heart <- read_csv("heart.csv")
+head(df_heart, 10)
+plot_histogram(df_heart)
+```
+
+```{r Data Manipulation}
+heart_split <- df_heart %>%
+  initial_split(prop = 0.7)
+
+heart_train <- training(heart_split)
+heart_test <- testing(heart_split)
+
+lm_heart <- lm(data = heart_train, target ~ .)
+
+```
+
+```{r Preditcions lm}
+predicted_lm <- lm_heart %>%
+  predict(heart_test)
+
+max(predicted_lm)
+min(predicted_lm)
+```
+
+```{r Logistics}
+
+log_heart <- glm(data = heart_train, family = "binomial", target ~ .)
+
+predicted_log <- log_heart %>%
+  predict(heart_test, type = "response")
+
+max(predicted_log)
+min(predicted_log)
+```
+Q: Another version of regularized regression is the LASSO in which the penalty is in absolute term (in other context these regularizations also called L1 and L2 regularizations after their norm term). Why it is necessary to use absolute or square term in the penalty?
+
+A: If we won't use absolute value, the beswt option will be to choose the coefficients to be minus infinity.
+
+
+```{r Ridge}
+
+
+
+fit_ridge <- glmnet(
+  heart_train %>% select(-target) %>% as.matrix(),
+  heart_train %>% select(target) %>% as.matrix(),
+  alpha = 0)
+
+plot(fit_ridge, xvar = "lambda", label = TRUE)
+
+cv_ridge <- cv.glmnet(
+  heart_train %>% select(-target) %>% as.matrix(),
+  heart_train %>% select(target) %>% as.matrix(),
+  alpha = 0)
+
+plot(cv_ridge)
+
+fit_ridge_best <- glmnet(
+  heart_train %>% select(-target) %>% as.matrix(),
+  heart_train %>% select(target) %>% as.matrix(),
+  alpha = 0, lambda = exp(-2))
+
+```
+
+```{r With tidymodels}
+
+preprocess <- recipe(target ~ ., data = heart_train) 
+  
+heart_cv <- vfold_cv(heart_train, v = 5)
+glmnet_model <- linear_reg(
+  mode    = "regression",
+  penalty = tune(),
+) %>%
+  set_engine("glmnet")
+detach("package:Metrics", unload=TRUE)
+glmnet_wfl <- workflow() %>%
+  add_recipe(preprocess) %>%
+  add_model(glmnet_model)
+glmnet_params <- parameters(penalty())
+glmnet_grid <- grid_max_entropy(glmnet_params, size = 20)
+glmnet_cv_result <- tune_grid(
+  glmnet_wfl,
+  resamples = heart_cv,
+  grid = glmnet_grid,
+  metrics = metric_set(rmse)
+)
+
+autoplot(glmnet_cv_result)
+
+glmnet_cv_result %>% 
+  show_best(metric = "rmse")
+lambda_min <- glmnet_cv_result %>% 
+  select_best(metric = "rmse") %>% 
+  select(penalty)
+
+lambda_1se <- glmnet_cv_result %>% 
+  select_by_one_std_err(
+    metric = "rmse",
+    desc(penalty)
+  ) %>% 
+  select(penalty)
+fit_ridge_min <- glmnet(
+  heart_train %>% select(-target) %>% as.matrix(),
+  heart_train %>% select(target) %>% as.matrix(),
+  alpha = 0, lambda = lambda_min)
+
+fit_ridge_1se <- glmnet(
+  heart_train %>% select(-target) %>% as.matrix(),
+  heart_train %>% select(target) %>% as.matrix(),
+  alpha = 0, lambda = lambda_1se)
+
+coef.glmnet(fit_ridge_best)
+
+predicted_min = predict.glmnet(object = fit_ridge_min,
+               newx = heart_test %>% 
+                 select(-target) %>% as.matrix())
+
+predicted_1se = predict.glmnet(object = fit_ridge_1se,
+               newx = heart_test %>% 
+                 select(-target) %>% as.matrix())
+actual = heart_test %>% 
+  select(target) %>% 
+  pull()
+p_load(Metrics)
+rmse(actual, predicted_min)
+rmse(actual, predicted_1se)
+
+```
+
