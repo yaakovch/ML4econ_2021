@@ -1,0 +1,324 @@
+---
+title: "Modeling"
+---
+<style type="text/css">
+  body{
+  font-size: 16pt;
+}
+</style>
+
+```{r include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = FALSE, error = FALSE, warning = FALSE,
+  message = FALSE
+)
+```
+
+```{r load_libraries}
+
+library(tidyverse)
+
+library(tidymodels)
+
+library(baguette)
+
+library(embed)
+
+library(workflowsets)
+library(keras)
+library(tensorflow)
+library(tictoc)
+```
+
+```{r parameters}
+
+professions <- c(
+  "manager",
+  "business",
+  "financialop",
+  "computer",
+  "architect",
+  "scientist",
+  "socialworker",
+  "postseceduc",
+  "legaleduc",
+  "artist",
+  "lawyerphysician",
+  "healthcare",
+  "healthsupport",
+  "protective",
+  "foodcare",
+  "building",
+  "sales",
+  "officeadmin",
+  "farmer",
+  "constructextractinstall",
+  "production",
+  "transport"
+)
+```
+
+```{r load_data}
+library(doParallel)
+cl <- makePSOCKcluster(6)
+registerDoParallel(cl)
+
+train_set <- read_csv("train.csv")
+
+train_set_transformed <- train_set %>%
+  rename(ID = 1) %>%
+  pivot_longer(cols = all_of(professions), names_to = "profession") %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  mutate(profession = factor(profession)) %>%
+  rowwise() %>%
+  mutate(white = 1 - sum(c_across(c("black", "hisp", "otherrace")))) %>%
+  ungroup() %>%
+  pivot_longer(
+    cols = c(c("black", "hisp", "otherrace", "white")),
+    names_to = "race"
+  ) %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  rowwise() %>%
+  mutate(west = 1 - sum(c_across(c("northeast", "northcentral", "south")))) %>%
+  ungroup() %>%
+  pivot_longer(
+    cols = c(c("northeast", "northcentral", "south", "west")),
+    names_to = "area"
+  ) %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  mutate(male = 1 - female) %>%
+  pivot_longer(
+    cols = c(c("male", "female")),
+    names_to = "sex"
+  ) %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  identity()
+
+test_set <- read_csv("test.csv")
+
+test_set_transformed <- test_set %>%
+  rename(ID = 1) %>%
+  pivot_longer(cols = all_of(professions), names_to = "profession") %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  mutate(profession = factor(profession)) %>%
+  rowwise() %>%
+  mutate(white = 1 - sum(c_across(c("black", "hisp", "otherrace")))) %>%
+  ungroup() %>%
+  pivot_longer(
+    cols = c(c("black", "hisp", "otherrace", "white")),
+    names_to = "race"
+  ) %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  rowwise() %>%
+  mutate(west = 1 - sum(c_across(c("northeast", "northcentral", "south")))) %>%
+  ungroup() %>%
+  pivot_longer(
+    cols = c(c("northeast", "northcentral", "south", "west")),
+    names_to = "area"
+  ) %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  mutate(male = 1 - female) %>%
+  pivot_longer(
+    cols = c(c("male", "female")),
+    names_to = "sex"
+  ) %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  identity()
+```
+
+```{r preprocessing}
+
+
+full_recipe <- recipe(lnwage ~ ., data = train_set_transformed) %>%
+  update_role(ID, new_role = "id variable") %>%
+  step_rm(ends_with("sq")) %>%
+  step_mutate(total_exp = expf + expp + 0.001) %>%
+  step_mutate(part_share = expp / total_exp) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  step_mutate_at(c("expf", "expp", "edyrs", "total_exp", "part_share"),
+    fn = list(sq = ~ .^2)
+  ) %>%
+  step_log(c("expf", "expp", "edyrs", "total_exp", "part_share"), offset = 0.01) %>%
+  step_normalize(all_numeric(), -all_outcomes()) %>%
+  step_lencode_glm(profession, outcome = vars(lnwage)) %>%
+  step_dummy(c("race", "area", "sex")) %>%
+  step_interact(~ edyrs:starts_with("race")) %>%
+  step_interact(~ starts_with("sex"):starts_with("race"))
+
+
+complete_recipe <- recipe(lnwage ~ ., data = train_set_transformed) %>%
+  update_role(ID, new_role = "id variable") %>%
+  step_rm(ends_with("sq")) %>%
+  step_mutate(total_exp = expf + expp + 0.001) %>%
+  step_mutate(part_share = expp / total_exp) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  step_mutate_at(c("expf", "expp", "edyrs", "total_exp", "part_share"),
+    fn = list(sq = ~ .^2)
+  ) %>%
+  step_normalize(all_numeric(), -all_outcomes()) %>%
+  step_lencode_glm(profession, outcome = vars(lnwage)) %>%
+  step_dummy(c("race", "area", "sex")) %>%
+  step_interact(~ edyrs:starts_with("race"))
+
+
+basic_recipe <- recipe(lnwage ~ ., data = train_set_transformed) %>%
+  update_role(ID, new_role = "id variable") %>%
+  step_rm(ends_with("sq")) %>%
+  step_mutate(total_exp = expf + expp + 0.001) %>%
+  step_mutate(part_share = expp / total_exp) %>%
+  step_rm(c("expf", "expp")) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  step_mutate_at(c("edyrs", "total_exp", "part_share"),
+    fn = list(sq = ~ .^2)
+  ) %>%
+  step_normalize(all_numeric(), -all_outcomes()) %>%
+  step_lencode_glm(profession, outcome = vars(lnwage)) %>%
+  step_dummy(c("race", "area", "sex")) %>%
+  step_interact(~ edyrs:starts_with("race"))
+```
+
+```{r set_models_spec}
+
+net_model <- linear_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+bag_mars_model <-bag_mars(num_terms = tune(), prod_degree = tune(),
+                          prune_method = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("earth") 
+boost_tree_model = boost_tree(sample_size = tune(), min_n = tune(),
+                              tree_depth = tune(),
+                              learn_rate = tune()
+                              ) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+svm_rbf_model = svm_rbf(cost = tune(), rbf_sigma = tune(), margin = tune()) %>% 
+  set_engine("kernlab") %>% 
+  set_mode("regression")
+svm_poly_model = svm_poly(cost = tune(), degree = tune(),
+                         scale_factor = tune(), margin = tune()) %>% 
+  set_engine("kernlab") %>% 
+  set_mode("regression")
+rand_forest_model = rand_forest(mtry = tune(), trees = tune(),
+                                min_n = tune()) %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+nearest_neighbor_model = nearest_neighbor(neighbors = tune(),
+                                          weight_func = tune(),
+                                          dist_power = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+mlp_model = mlp(hidden_units = tune(), penalty = tune()) %>% 
+  set_engine("keras") %>% 
+  set_mode("regression")
+```
+
+
+```{r test_drive, eval=FALSE}
+
+
+temp_data <- basic_recipe %>%
+  prep() %>%
+  bake(train_set_transformed)
+
+models_set <- workflow_set(
+  preproc = list(basic = basic_recipe),
+  models = list(lasso = lasso_model)
+)
+
+resample_res <- models_set %>%
+  workflow_map(
+    fn = "tune_grid",
+    resamples = vfold_cv(train_set_transformed, 2),
+    grid = 100
+  )
+```
+
+
+
+
+```{r set_cross_validation_and_tuning}
+
+cv_folds <- train_set_transformed %>%
+  vfold_cv(v = 5, repeats = 2)
+
+param_grid <- grid_regular(penalty(), levels = 50) %>%
+  add_column()
+```
+
+```{r estimation}
+
+models_set <- workflow_set(
+  preproc = list(
+    # basic = basic_recipe
+    basic = basic_recipe, complete_recipe = complete_recipe,
+    full_recipe = full_recipe
+  ),
+   models = list(nearest_neighbor = nearest_neighbor_model,
+                   rand_forest = rand_forest_model, svm_poly = svm_poly_model,
+                   svm_rbf = svm_rbf_model, boost_tree = boost_tree_model,
+                   bag_mars = bag_mars_model, net = net_model)
+   # models = list(svm_rbf = svm_rbf_model)
+)
+t = tic()
+resample_res <- models_set %>%
+  workflow_map(
+    fn = "tune_grid",
+    resamples = cv_folds,
+    grid = 2000,
+    control = control_grid(parallel_over = "everything")
+  )
+t = toc(t)
+t$toc - t$tic
+```
+
+```{r evaluation}
+
+resample_res %>%
+  rank_results(rank_metric = "rmse") %>%
+  filter(.metric == "rmse") %>%
+  select(wflow_id, .config, mean, rank) %>%
+  mutate(mean = mean^2) %>%
+  ggplot(aes(x = rank, y = mean)) +
+  geom_point()
+
+res = resample_res %>%
+  rank_results(rank_metric = "rmse") %>%
+  filter(.metric == "rmse") %>%
+  select(wflow_id, .config, mean, rank) %>%
+  mutate(mean = mean^2)
+res
+```
+
+```{r prediction, eval=FALSE}
+
+test_split <- make_splits(
+  list(analysis = 1:1000, assessment = 1001:1500),
+  bind_rows(train_set_transformed, test_set_transformed)
+)
+
+
+best_model <- resample_res %>%
+  pull_workflow_set_result("basic_svm_poly") %>%
+  select_best(metric = "rmse")
+
+pred <- resample_res %>%
+  pull_workflow("basic_svm_poly") %>%
+  finalize_workflow(best_model) %>%
+  last_fit(test_split)
+
+
+test_set_transformed %>%
+  select("ID") %>%
+  bind_cols(pred$.predictions[[1]] %>%
+    select(lnwage = .pred)) %>%
+  write_csv("basic_svm_poly.csv")
+```

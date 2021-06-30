@@ -1,0 +1,77 @@
+---
+title: "exercise_4"
+author: "Yaakov Chen-Zion"
+date: "6/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load packages and Data}
+library(tidyverse)
+library(hdm)
+library(broom)
+data("GrowthData")
+```
+
+```{r Linear Model}
+y <- GrowthData |> select(Outcome)
+d <- GrowthData |> select(gdpsh465)
+x <- GrowthData |> select(-c(gdpsh465, Outcome, intercept))
+
+varnames <- colnames(GrowthData)
+xnames <- varnames[-c(1, 2, 3)] # names of X variables
+dandxnames <- varnames[-c(1, 2)] # names of D and X variables
+fmla <- as.formula(paste("Outcome ~ ", paste(dandxnames, collapse = "+")))
+
+fit_lm <- GrowthData |> lm(formula = fmla)
+
+p_out <- rlassoEffect(
+  y = y, d = d, x = as.matrix(x),
+  method = "partialling out"
+) |> summary()
+p_out
+
+
+d_select <- rlassoEffect(
+  y = y, d = d, x = as.matrix(x),
+  method = "double selection"
+) |> summary()
+d_select
+
+results <- tibble(
+  lm = filter(tidy(fit_lm), term == "gdpsh465")[1:2] |>
+  pull(),
+  partialling_out = chuck(p_out, "coefficients")[1:2],
+  double_lasso = chuck(d_select, "coefficients")[1:2]
+) |> t()
+colnames(results) <- c("Estimate", "SD")
+results
+```
+
+```{r IV}
+
+data("AJR")
+
+y <- AJR |> select(GDP)
+d <- AJR |> select(Exprop)
+z <- AJR |> select(logMort)
+x <- model.matrix(~-1 + (Latitude + Latitude2 + Africa + Asia +
+Namer + Samer)^2, data = AJR)
+fmla = as.formula("GDP ~ Exprop + (Latitude + Latitude2 + Africa + Asia + Namer + Samer)^2 | logMort + (Latitude + Latitude2 + Africa + Asia + Namer + Samer)^2")
+
+rlassoIV(x = x, y = pull(y), d = d, z = z, select.X = TRUE, select.Z=  FALSE) |> 
+  summary()
+
+rlassoIV(x = x, y = pull(y), d = d, z = z, select.X = TRUE, select.Z=  FALSE) |> 
+  confint()
+
+fmla.y <- GDP ~ (Latitude + Latitude2 + Africa + Asia + Namer +
+Samer)^2
+
+rY <- lm(fmla.y, data = AJR) |> extract("res")
+```
+

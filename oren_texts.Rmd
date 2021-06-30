@@ -1,0 +1,38 @@
+---
+title: "oren_texts"
+author: "Yaakov Chen-Zion"
+date: "6/23/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load texts}
+library(readtext)
+library(textreuse)
+library(tidyverse)
+library(openxlsx)
+
+jerus <- readtext("jerusalem.txt", encoding = "UTF8") |> chuck("text")
+milan <- readtext("milan.txt", encoding = "UTF8") |> chuck("text")
+alligned <- align_local(a = jerus, b = milan)
+
+tibble(
+  jerusalem = alligned |> chuck("a_edits") |> strsplit("\\s+") |>
+  unlist() |> matrix(),
+  milan = alligned |> chuck("b_edits") |> strsplit("\\s+") |>
+  unlist() |> matrix()
+) |>
+write.xlsx("abc.xlsx", overwrite = TRUE)
+
+fileConn <- file("jerus_allign.txt") 
+writeLines(alligned |> chuck("a_edits"), fileConn)
+close(fileConn)
+
+fileConn <- file("milan_allign.txt")
+writeLines(alligned |> chuck("b_edits"), fileConn)
+close(fileConn)
+
+```

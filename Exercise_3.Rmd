@@ -1,0 +1,233 @@
+---
+title: "exercise 3"
+author: "Yaakov Chen-Zion"
+date: "5/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Load libraries}
+library(tidyverse)
+library(magrittr)
+library(tidymodels)
+library(caret)
+library(DALEX)
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(ada)
+library(doParallel)
+library(pROC)
+library(e1071)
+library(grid)
+library(gridExtra)
+library(tictoc)
+```
+
+```{r trees}
+set.seed("18052021")
+cl <- makePSOCKcluster(16)
+registerDoParallel(cl)
+
+heart <- read_csv("heart.csv")
+
+t = tic()
+formula_part <- target ~ sex + cp + chol
+formula_full <- target ~ .
+
+heart %>%
+  rpart(formula = formula_part, method = "class") %>%
+  fancyRpartPlot(caption = NULL)
+
+
+heart %>%
+  rpart(formula = formula_part, method = "class", minsplit = 2, minbucket = 1) %>%
+  fancyRpartPlot(caption = NULL)
+
+heart %>%
+  rpart(formula = formula_part, method = "class", minsplit = 2, minbucket = 1) %>%
+  printcp()
+
+heart_split <- initial_split(heart, prop = 2 / 3)
+
+full_tree <- heart_split %>%
+  training() %>%
+  rpart(formula = formula_part, method = "class")
+
+reg_tree <- heart_split %>%
+  training() %>%
+  rpart(formula = formula_part, method = "class", minsplit = 2, minbucket = 1)
+
+full_tree %>%
+  rpart.predict(newdata = testing(heart_split), type = "class") %>%
+  table(., pull(testing(heart_split), target))
+
+reg_tree %>%
+  rpart.predict(newdata = testing(heart_split), type = "class") %>%
+  table(., pull(testing(heart_split), target))
+
+prune(full_tree, cp = 0.03) %>%
+  rpart.predict(newdata = testing(heart_split), type = "class") %>%
+  table(., pull(testing(heart_split), target))
+```
+
+```{r KNN}
+train_heart <- heart_split %>%
+  training()
+
+fitControl <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+t_knn <- train(
+  x = select(train_heart, -target),
+  y = pull(train_heart, target),
+  method = "knn", trControl = fitControl
+)
+t_ada <- train(
+  x = select(train_heart, -target),
+  y = as.factor(pull(train_heart, target)),
+  method = "ada", trControl = fitControl
+)
+t_gbm <- train(
+  x = select(train_heart, -target),
+  y = pull(train_heart, target),
+  method = "gbm", trControl = fitControl
+)
+
+t_rf <- train(
+  x = select(train_heart, -target),
+  y = pull(train_heart, target),
+  method = "rf", trControl = fitControl
+)
+
+ggplot(t_knn)
+ggplot(t_ada)
+ggplot(t_gbm)
+ggplot(t_rf)
+
+g_gbm <- expand.grid(
+  n.trees = (1:30) * 50, interaction.depth = c(1, 5, 9),
+  shrinkage = 0.1, n.minobsinnode = 20
+)
+
+garbage <- capture.output(t_g_gbm <- train(
+  x = select(train_heart, -target),
+  y = pull(train_heart, target),
+  method = "gbm", trControl = fitControl, tuneGrid = g_gbm
+))
+
+a <- ggplot(t_gbm)
+
+b <- ggplot(t_g_gbm)
+
+grid.arrange(a, b, nrow = 1)
+```
+
+```{r Interpertability}
+gbm_explainer <- explain(t_g_gbm, label = "gbm", data = select(train_heart, -target), y = pull(train_heart, target))
+
+gbm_perf <- model_performance(explainer = gbm_explainer)
+
+knn_explainer <- explain(t_knn, label = "knn", data = select(train_heart, -target), y = pull(train_heart, target))
+
+knn_perf <- model_performance(explainer = knn_explainer)
+
+ada_explainer <- explain(t_ada, label = "ada", data = select(train_heart, -target), y = pull(train_heart, target))
+
+ada_perf <- model_performance(explainer = ada_explainer)
+
+rf_explainer <- explain(t_rf, label = "rf", data = select(train_heart, -target), y = pull(train_heart, target))
+
+rf_perf <- model_performance(explainer = rf_explainer)
+
+a <- plot(gbm_perf, knn_perf, ada_perf, rf_perf)
+b <- plot(gbm_perf, knn_perf, ada_perf, rf_perf, geom = "boxplot")
+
+grid.arrange(a, b, nrow = 1)
+
+gbm_imp <- variable_importance(explainer = gbm_explainer)
+knn_imp <- variable_importance(explainer = knn_explainer)
+ada_imp <- variable_importance(explainer = ada_explainer)
+rf_imp <- variable_importance(explainer = rf_explainer)
+
+plot(gbm_imp, knn_imp, ada_imp, rf_imp)
+gbm_eff <- list()
+knn_eff <- list()
+ada_eff <- list()
+rf_eff <- list()
+plots <- list()
+
+cnt <- 0
+cn <- colnames(select(train_heart, -target))
+for (n in cn) {
+  cnt <- cnt + 1
+  gbm_eff[[cnt]] <- variable_effect(
+    explainer = gbm_explainer, type = "partial_dependency",
+    variables = n
+  )
+  knn_eff[[cnt]] <- variable_effect(
+    explainer = knn_explainer, type = "partial_dependency",
+    variables = n
+  )
+  ada_eff[[cnt]] <- variable_effect(
+    explainer = ada_explainer, type = "partial_dependency",
+    variables = n
+  )
+  rf_eff[[cnt]] <- variable_effect(
+    explainer = rf_explainer, type = "partial_dependency",
+    variables = n
+  )
+  plots[[cnt]] <- plot(gbm_eff[[cnt]], knn_eff[[cnt]], ada_eff[[cnt]],
+    rf_eff[[cnt]],
+    title = n
+  )
+}
+
+grid.arrange(
+  plots[[1]], plots[[2]], plots[[3]], plots[[4]], plots[[5]], plots[[6]],
+  plots[[7]], plots[[8]], plots[[9]], plots[[10]], plots[[11]], plots[[12]],
+  plots[[13]]
+)
+
+gbm_pbbd <- train_heart %>%
+  slice_head(n = 1) %>%
+  predict_parts_break_down(explainer = gbm_explainer) %>%
+  plot()
+
+knn_pbbd <- train_heart %>%
+  slice_head(n = 1) %>%
+  predict_parts_break_down(explainer = knn_explainer) %>%
+  plot()
+
+ada_pbbd <- train_heart %>%
+  slice_head(n = 1) %>%
+  predict_parts_break_down(explainer = ada_explainer) %>%
+  plot()
+
+rf_pbbd <- train_heart %>%
+  slice_head(n = 1) %>%
+  predict_parts_break_down(explainer = rf_explainer) %>%
+  plot()
+
+grid.arrange(gbm_pbbd, knn_pbbd, ada_pbbd, rf_pbbd)
+```
+
+
+```{r plot ROCs}
+test_heart <- testing(heart_split)
+
+pred_gbm <- predict(t_gbm, newdata = test_heart)
+pred_knn <- predict(t_knn, newdata = test_heart)
+pred_ada <- predict(t_ada, newdata = test_heart)
+pred_rf <- predict(t_rf, newdata = test_heart)
+
+plot.roc(pred_gbm, pull(test_heart, target))
+plot.roc(pred_knn, pull(test_heart, target))
+plot.roc(pred_ada, pull(test_heart, target))
+plot.roc(pred_rf, pull(test_heart, target))
+
+toc(t)
+```

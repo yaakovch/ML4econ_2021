@@ -1,0 +1,471 @@
+---
+title: "EDA"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+<style type="text/css">
+  body{
+  font-size: 16pt;
+}
+</style>
+
+```{r include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, error = FALSE, warning = FALSE,
+                      message = FALSE)
+
+```
+
+
+```{r load_libraries}
+
+devtools::load_all()
+
+library(tidyverse)
+
+library(tidymodels)
+
+library(corrr)
+
+library(ggcorrplot)
+
+library(glue)
+
+```
+
+```{r set_params}
+
+professions = c(
+  "manager",
+  "business",
+  "financialop",
+  "computer",
+  "architect",
+  "scientist",
+  "socialworker",
+  "postseceduc",
+  "legaleduc",
+  "artist",
+  "lawyerphysician",
+  "healthcare",
+  "healthsupport",
+  "protective",
+  "foodcare",
+  "building",
+  "sales",
+  "officeadmin",
+  "farmer",
+  "constructextractinstall",
+  "production",
+  "transport"
+)
+
+
+```
+
+```{r load_data}
+
+data(train_set)
+
+train_set_transformed = train_set %>%
+  rename(ID = 1) %>%
+  pivot_longer(cols = all_of(professions), names_to = "profession") %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  mutate(profession = factor(profession))%>% 
+  rowwise() %>% 
+  mutate(white = 1 - sum(c_across(c("black","hisp","otherrace")))) %>% 
+  ungroup() %>% 
+  pivot_longer(cols = c(c("black","hisp","otherrace","white")),
+               names_to = "race") %>% 
+  filter(value == 1) %>% 
+  select(-value) %>% 
+  rowwise() %>% 
+  mutate(west = 1 - sum(c_across(c("northeast","northcentral","south")))) %>% 
+  ungroup() %>% 
+  pivot_longer(cols = c(c("northeast","northcentral","south","west")),
+               names_to = "area") %>%
+  filter(value == 1) %>%
+  select(-value) %>%
+  identity()
+
+
+# data(test_set)
+# 
+# test_set = test_set %>% 
+#   rename("ID" = 1)
+
+```
+
+```{r recipe_preprocessing}
+
+preprocess_recipe = recipe(lnwage ~ ., train_set_transformed)
+
+
+```
+
+```{r remove_squares}
+
+preprocess_recipe = preprocess_recipe %>% 
+  step_rm(ends_with("sq")) %>% 
+  step_mutate(total_exp = expf + expp) %>% 
+  step_mutate(part_share = expp / total_exp)
+
+train_set_baked = preprocess_recipe %>% 
+  prep() %>% 
+  bake(train_set_transformed)
+
+
+
+
+```
+
+
+
+## Outliers
+
+```{r outliers}
+
+train_set_baked %>% 
+  select(where(~ is.numeric(.x) && length(unique(.x)) > 2),-ID,-lnwage) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(y = value)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free")
+
+```
+
+We can see that there are outliers in all the numeric features.
+For the squared features I'll try the Yeo-Johnson transformation to deal
+with skewness.
+
+
+
+```{r yeo_johnson_transformation}
+
+preprocess_recipe = preprocess_recipe %>%
+  step_YeoJohnson(all_numeric())
+
+train_set_baked = preprocess_recipe %>% 
+  prep() %>% 
+  bake(train_set_transformed)
+
+
+
+```
+
+```{r plot_outliers_after_transformation}
+
+train_set_baked %>% 
+  select(where(~ is.numeric(.x) && length(unique(.x)) > 2),-ID,-lnwage) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(y = value)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free")
+
+```
+
+## Numeric features
+
+
+
+```{r dist_of_numeric_features}
+
+train_set_baked %>% 
+  select(where(~ is.numeric(.x) && length(unique(.x)) > 2)) %>% 
+  pivot_longer(cols = -ID) %>% 
+  ggplot(aes(x = value)) + 
+  geom_histogram() + 
+  facet_wrap(~name, scales = "free") + 
+  xlab(NULL) + ylab(NULL)
+  
+
+```
+
+```{r add_features_transformation}
+
+preprocess_recipe = preprocess_recipe %>% 
+  step_mutate_at(c("expf","expp","edyrs","total_exp","part_share"),
+                 fn = list(log = log, sq = sqrt, cube = ~. ^ 3))
+
+train_set_baked = preprocess_recipe %>% 
+  prep() %>% 
+  bake(train_set_transformed)
+
+names(train_set_baked)
+
+```
+
+
+
+```{r dist_of_numeric_features_after_transformation}
+
+train_set_baked %>% 
+  select(where(~ is.numeric(.x) && length(unique(.x)) > 2)) %>% 
+  pivot_longer(cols = -ID) %>% 
+  ggplot(aes(x = value)) + 
+  geom_histogram() + 
+  facet_wrap(~name, scales = "free") + 
+  xlab(NULL) + ylab(NULL)
+  
+
+```
+
+
+When looking at the correlations of the numeric features with lnwage we see that education and father experience are positively correlated with lnwage (the square father experience has low correlation despite the fact that lnwage has only positive values). The strange result is the negative correlation between experience (and its square) to lnwage.
+
+```{r correlations_of_numeric_features}
+
+train_set_baked %>% 
+  select(-ID) %>% 
+  select(where(~ is.numeric(.x) && length(unique(.x)) > 2)) %>% 
+  correlate() %>% 
+  stretch() %>% 
+  rename(feature = y) %>% 
+  filter(complete.cases(.)) %>% 
+  filter(x == "lnwage") %>% 
+  ggplot(aes(x = reorder(feature,r), y = r)) + 
+  geom_col() + 
+  coord_flip() + 
+  xlab(NULL) + ylab(NULL) + 
+  ggtitle("Correlations of numeric features with lnwage")
+
+```
+
+Does experience and education years (after 18 years old)sum up to age? Need to think about whether add age as another feature?
+
+
+```{r age_distribution}
+
+train_set_baked %>% 
+  mutate(age = expp + edyrs + 18) %>% 
+  ggplot(aes(x = age)) + 
+  geom_histogram() + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Age (expp + edyrs + 18) distribution")
+
+```
+
+```{r add_age}
+
+preprocess_recipe = preprocess_recipe %>% 
+  step_mutate(age = expp + edyrs + 18)
+
+train_set_baked = preprocess_recipe %>% 
+  prep() %>% 
+  bake(train_set_transformed)
+
+```
+
+
+```{r scatterplot_of_numeric_features}
+
+train_set_baked %>% 
+  select(where(~ is.numeric(.x) && length(unique(.x)) > 2), lnwage,-ID) %>% 
+  pivot_longer(-lnwage) %>% 
+  ggplot(aes(x = value, y = lnwage)) + 
+  geom_point() + 
+  geom_smooth(method = "glm") + 
+  facet_wrap(~name, scales = "free") + 
+  xlab(NULL) + ylab(NULL) + 
+  ggtitle("Scaterrplot of lnwage and numeric features")
+
+```
+
+
+
+
+
+## Categorical features
+
+There are many features that are the results of one hot encoding of the categorical features. Perhaps we can try another encoding and so I collect back the categories in area, race and profession. Both area and race are missing the reference category (west-northwest for area and white for race)
+
+
+```{r boxplot_by_target, fig.height=7}
+
+train_set_baked %>% 
+  select(where(is.factor), lnwage) %>% 
+  pivot_longer(-lnwage) %>% 
+  ggplot(aes(x = value, y = lnwage)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free") + 
+  xlab(NULL) + ylab(NULL) + ggtitle("lnwage distribution by cat features")
+
+
+
+```
+
+### Area
+
+South is the most low paying and the most frequent area
+
+
+```{r target_distribution_by_area}
+
+train_set_baked %>% 
+  select(lnwage, area) %>% 
+  ggplot(aes(x = reorder(area,lnwage,FUN = mean), y = lnwage)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Average lnwage by area")
+
+```
+
+```{r area_distribution}
+
+train_set_baked %>% 
+  count(area) %>% 
+  mutate(n = n/sum(n)) %>% 
+  ggplot(aes(x = reorder(area,n), y = n)) + 
+  geom_col() + 
+  coord_flip() + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Area distribution")
+  
+
+```
+
+
+
+### Profession
+
+In general the data looks good (computer, business and finance making more than social worker and building) but there are "outliers" such as artist (at the top) or scientist (at the middle).Checking out the distribution of lnwage by profession we can see that there is one rich artist that stands out. One way of dealing with it is to try to encode with median lnwage by profession
+
+
+```{r target_distribution_by_profession}
+
+train_set_baked %>% 
+  select(lnwage, profession) %>% 
+  ggplot(aes(x = reorder(profession,lnwage,FUN = mean), y = lnwage)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Average lnwage by profession")
+
+```
+
+```{r profession_distribution}
+
+train_set_baked %>% 
+  count(profession) %>% 
+  mutate(n = n/sum(n)) %>% 
+  ggplot(aes(x = reorder(profession,n), y = n, fill = (n <= 0.025))) + 
+  geom_col() + 
+  coord_flip() + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  labs(fill = "Rare profession (less than 2.5%)") + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Profession distribution")
+  
+
+```
+
+```{r lump_rare_profession}
+
+preprocess_recipe = preprocess_recipe %>% 
+  step_other(profession,threshold = 0.025)
+
+train_set_baked = preprocess_recipe %>% 
+  prep() %>% 
+  bake(train_set_transformed)
+
+```
+
+
+We can see that some professions are relatively rare so we may try to drop
+them all in one category (other)
+
+
+```{r target_distribution_by_profession_after_lumping}
+
+train_set_baked %>% 
+  select(lnwage, profession) %>% 
+  ggplot(aes(x = reorder(profession,lnwage,FUN = mean), y = lnwage,
+             fill = (profession == "other"))) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  scale_fill_manual(values = c("white","lightblue")) + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Average lnwage by profession") + 
+  theme(legend.position = "none")
+
+```
+
+
+
+### Race
+
+
+```{r target_distribution_by_race}
+
+train_set_baked %>% 
+  select(lnwage, race) %>% 
+  ggplot(aes(x = reorder(race,lnwage,FUN = mean), y = lnwage)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Average lnwage by race")
+
+```
+
+```{r race_distribution}
+
+train_set_baked %>% 
+  count(race) %>% 
+  mutate(n = n/sum(n)) %>% 
+  ggplot(aes(x = reorder(race,n), y = n,fill = (n <= 0.05))) + 
+  geom_col() + 
+  coord_flip() + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  labs(fill = "Rare race (less than 5%)") + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Race distribution")
+  
+
+```
+
+
+## Interactions
+
+```{r check_for_race_edyrs_interaction}
+
+train_set_transformed %>%
+  ggplot(aes(x = edyrs, y = lnwage, color = race)) + 
+  geom_smooth(method = "lm", se = FALSE)
+
+```
+
+There seems to be an interaction between race and education - the effect of education on wage changes with race.
+
+```{r add_interaction_between_edyrs_and_race}
+
+preprocess_recipe = preprocess_recipe %>% 
+  step_dummy(race) %>% 
+  step_interact(~edyrs:starts_with("race"))
+
+train_set_baked = preprocess_recipe %>% 
+  prep() %>% 
+  bake(train_set_transformed)
+
+```
+
+```{r check_for_area_edyrs_interaction}
+
+train_set_transformed %>% 
+  ggplot(aes(x = edyrs, y = lnwage, color = area)) + 
+  geom_smooth(method = "lm", se = FALSE)
+
+```
+
+Looking at an interaction between area and education gives nothing.
+
+
+
+# Summary
+* Reduce skewness by Yeo-Johnson (expfsq, exppsq)
+* Reverse OHE in area, race and profession
+* For profession : 
+  * try (lnwage) embeddings
+  * lump rare categories together  
+
+
+
+
+
